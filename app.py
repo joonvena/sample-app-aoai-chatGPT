@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 
 from backend.auth.auth_utils import get_authenticated_user_details
 from backend.history.cosmosdbservice import CosmosConversationClient
+from azure.identity import DefaultAzureCredential
+from backend.auth.token_manager import TokenManager
 
 load_dotenv()
 
@@ -92,6 +94,26 @@ if AZURE_COSMOSDB_DATABASE and AZURE_COSMOSDB_ACCOUNT and AZURE_COSMOSDB_CONVERS
         logging.exception("Exception in CosmosDB initialization", e)
         cosmos_conversation_client = None
 
+azure_credential = DefaultAzureCredential(exclude_shared_token_cache_credential=True)
+
+# Use AD auth for OpenAI if no key is provided
+if not AZURE_OPENAI_KEY:
+    openai.api_type = "azure_ad"
+    openai.api_base = AZURE_OPENAI_ENDPOINT if AZURE_OPENAI_ENDPOINT else f"https://{AZURE_OPENAI_RESOURCE}.openai.azure.com/"
+    openai.api_version = "2023-08-01-preview"
+    openai_token = azure_credential.get_token(f"https://cognitiveservices.azure.com/.default")
+    openai.api_key = openai_token.token
+else:
+    openai.api_type = "azure"
+    openai.api_base = AZURE_OPENAI_ENDPOINT if AZURE_OPENAI_ENDPOINT else f"https://{AZURE_OPENAI_RESOURCE}.openai.azure.com/"
+    openai.api_version = "2023-08-01-preview"
+    openai.api_key = AZURE_OPENAI_KEY
+
+token_manager = TokenManager(azure_credential, openai.api_type, "https://cognitiveservices.azure.com/.default")
+
+@app.before_request
+def check_token():
+    openai.api_key = token_manager.check_token()
 
 def is_chat_model():
     if 'gpt-4' in AZURE_OPENAI_MODEL_NAME.lower() or AZURE_OPENAI_MODEL_NAME.lower() in ['gpt-35-turbo-4k', 'gpt-35-turbo-16k']:
@@ -386,11 +408,6 @@ def stream_without_data(response, history_metadata={}):
 
 
 def conversation_without_data(request_body):
-    openai.api_type = "azure"
-    openai.api_base = AZURE_OPENAI_ENDPOINT if AZURE_OPENAI_ENDPOINT else f"https://{AZURE_OPENAI_RESOURCE}.openai.azure.com/"
-    openai.api_version = "2023-08-01-preview"
-    openai.api_key = AZURE_OPENAI_KEY
-
     request_messages = request_body["messages"]
     messages = [
         {
@@ -401,7 +418,7 @@ def conversation_without_data(request_body):
 
     for message in request_messages:
         messages.append({
-            "role": message["role"] ,
+            "role": message["role"],
             "content": message["content"]
         })
 
